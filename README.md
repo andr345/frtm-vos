@@ -1,2 +1,2 @@
-Accepted at CVPR 2020
+Accepted at CVPR 2020.
 Coming soon ...
