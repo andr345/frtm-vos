@@ -1,6 +1,6 @@
 # FRTM-VOS
 This repository contains an implementation of the video object segmentation
-method FRTM. A detailed description of the method for is
+method FRTM. A detailed description of the method is
 found in the CVPR 2020 paper <https://arxiv.org/pdf/2003.00908.pdf>.
 If you find the code useful, please cite using:
 
