@@ -8,7 +8,6 @@ If you find the code useful, please cite using:
       title={Learning Fast and Robust Target Models for Video Object Segmentation},
       author={Robinson, Andreas and Lawin, Felix J{\"a}remo and Danelljan, Martin and Khan, Fahad Shahbaz and Felsberg, Michael},
       booktitle = {{IEEE} Conference on Computer Vision and Pattern Recognition},
-      year =  {2018},
       month = {June},
       year={2020},
       publisher = {Computer Vision Foundation},
