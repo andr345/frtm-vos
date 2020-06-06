@@ -1,4 +1,9 @@
 # FRTM-VOS
+
+[<b>Update 2020-06-07</b>: We are currently cleaning up the training code
+and aim to finish ahead of CVPR 2020 in mid June. Sorry about the delay -
+it is mostly due to the regression tests.]
+
 This repository contains an implementation of the video object segmentation
 method FRTM. A detailed description of the method is
 found in the CVPR 2020 paper <https://arxiv.org/pdf/2003.00908.pdf>.

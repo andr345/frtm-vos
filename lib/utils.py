@@ -22,33 +22,6 @@ def text_bargraph(values):
     return graph
 
 
-class ModuleWrapper:
-    """ A wrapper for hiding modules from PyTorch, so that the same module can be used in multiple places.
-    and yet saved only once in a checkpoint, or not at all. """
-
-    # https://stackoverflow.com/questions/1466676/create-a-wrapper-class-to-call-a-pre-and-post-function-around-existing-functions
-
-    def __init__(self, wrapped_module):
-        self.__wrapped_module__ = wrapped_module
-
-    def __getattr__(self, attr):
-        orig_attr = self.__wrapped_module__.__getattribute__(attr)
-        if callable(orig_attr):
-            def hooked(*args, **kwargs):
-                result = orig_attr(*args, **kwargs)
-                # prevent wrapped_class from becoming unwrapped
-                if result == self.__wrapped_module__:
-                    return self
-                return result
-
-            return hooked
-        else:
-            return orig_attr
-
-    def __call__(self, *args, **kwargs):
-        return self.__wrapped_module__(*args, **kwargs)
-
-
 def conv(ic, oc, ksize, bias=True, dilation=1, stride=1):
     return nn.Conv2d(ic, oc, ksize, padding=ksize // 2, bias=bias, dilation=dilation, stride=stride)
 
