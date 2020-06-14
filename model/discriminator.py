@@ -80,6 +80,7 @@ class Discriminator(nn.Module):
 
         self.project = conv(in_channels, c_channels, 1, bias=False)
         self.filter = conv(c_channels, out_channels, 3, bias=False)
+        self.layer = layer
 
         self.init_iters = init_iters
         self.update_iters = update_iters

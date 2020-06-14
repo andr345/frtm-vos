@@ -1,23 +1,22 @@
 # FRTM-VOS
 
-[<b>Update 2020-06-07</b>: We are currently cleaning up the training code
-and aim to finish ahead of CVPR 2020 in mid June. Sorry about the delay -
-it is mostly due to the regression tests.]
-
 This repository contains an implementation of the video object segmentation
 method FRTM. A detailed description of the method is
-found in the CVPR 2020 paper <https://arxiv.org/pdf/2003.00908.pdf>.
+found in the CVPR 2020 paper <em>"Learning Fast and Robust Target Models for Video Object Segmentation"</em>
+ 
+CVF: [[paper]](http://openaccess.thecvf.com/content_CVPR_2020/papers/Robinson_Learning_Fast_and_Robust_Target_Models_for_Video_Object_Segmentation_CVPR_2020_paper.pdf)
+[[supplement]](http://openaccess.thecvf.com/content_CVPR_2020/supplemental/Robinson_Learning_Fast_and_CVPR_2020_supplemental.pdf) \
+Arxiv: [[paper]](https://arxiv.org/pdf/2003.00908.pdf)
+
 If you find the code useful, please cite using:
 
-    @InProceedings{robinson2020learning,
-      title={Learning Fast and Robust Target Models for Video Object Segmentation},
-      author={Robinson, Andreas and Lawin, Felix J{\"a}remo and Danelljan, Martin and Khan, Fahad Shahbaz and Felsberg, Michael},
-      booktitle = {{IEEE} Conference on Computer Vision and Pattern Recognition},
-      month = {June},
-      year={2020},
-      publisher = {Computer Vision Foundation},
-    }
-
+    @InProceedings{Robinson_2020_CVPR,
+        author = {Robinson, Andreas and Lawin, Felix Jaremo and Danelljan, Martin and Khan, Fahad Shahbaz and Felsberg, Michael},
+        title = {Learning Fast and Robust Target Models for Video Object Segmentation},
+        booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+        month = {June},
+        year = {2020}
+} 
 
 ## Installation
 Clone the repository: `git clone https://github.com/andr345/frtm-vos.git`
@@ -119,8 +118,38 @@ python evaluate.py --model rn18_all.pth --fast --dset dv2017val   # Ours fast DA
   | yt2018val   | YouTubeVOS 2018 official "valid_all_frames" set            |
 
 ## Training
-Code for training will be uploaded soon.
 
+### Running the trainer
+
+Training is set up similarly to evaluation.
+
+Open `train.py` and adjust the `paths` dict to your dataset locations, checkpoint and tensorboard
+output directories and the place to cache target model weights.
+
+To train a network, run
+
+```shell script
+python train.py <session-name> --ftext resnet101 --dset all --dev cuda:0
+```
+`--ftext` is the name of the feature extractor, either resnet18 or resnet101.
+
+`--dset` is one of dv2017, ytvos2018 or all ("all" really means "both").
+
+`--dev` is the name of the device to train on.
+
+Replace <session-name> with whatever you like. Subdirectories with this name
+will be created under your checkpoint and tensorboard paths.
+
+### Target model cache
+
+Training target models from scratch and filling the cache take approximately 5 days of training.
+Once the cache is mostly full, the next training session should take less than 24 hours.
+The cache requires 17 GB disk space for training with ResNet-101 features and 32 intermediate
+channels (as in the paper) and 5 GB for ResNet-18 and the same number of channels.
+
+We intend to share our own cache online to give everybody a quick-start, hopefully before the
+end of the week (i.e June 19th 2020).
+ 
 ## Contact
 Andreas Robinson
 

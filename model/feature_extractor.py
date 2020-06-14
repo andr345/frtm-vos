@@ -69,3 +69,19 @@ class ResnetFeatureExtractor:
 
     def get_out_channels(self):
         return self._out_channels
+
+    def no_grad_forward(self, input, output_layers=None, chunk_size=None):
+        """
+        :param input:
+        :param output_layers:  List of layer names (layer1 ...) to keep
+        :param chunk_size:  [Optional] Split the batch into chunks of this size
+                            and process them sequentially to save memory.
+        :return: dict of output tensors
+        """
+
+        with torch.no_grad():
+            if chunk_size is None:
+                return self(input, output_layers)
+            else:
+                outputs = [self(t, output_layers) for t in torch.split(input, chunk_size)]
+                return {L: torch.cat([out[L] for out in outputs]) for L in outputs[0]}

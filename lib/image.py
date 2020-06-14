@@ -57,16 +57,3 @@ def warp_affine(src, H, size, mode='bicubic'):
 
     dst = dst.squeeze(0) if no_cdim else dst
     return dst
-
-
-def resize(src, size, mode='bilinear'):
-    assert len(src.shape) < 4 or src.shape[0] == 1  # requires batch size 1
-
-    no_cdim = len(src.shape) == 2
-    src = src.view(-1, *src.shape[-2:])
-    align_corners = None if mode in ('nearest', 'area') else False
-
-    dst = F.interpolate(src.unsqueeze(0), size, mode, align_corners=align_corners).squeeze(0)
-
-    dst = dst.squeeze(0) if no_cdim else dst
-    return dst

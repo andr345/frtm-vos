@@ -133,7 +133,7 @@ class Trainer:
                 runtime.update(time() - t0)
                 t0 = time()
 
-                stats['stats/lr'] = self.scheduler.get_lr()[0]
+                stats['stats/lr'] = self.scheduler.get_last_lr()[0]
                 self.update_stats(stats, i, len(loader), runtime, do_print=True)
 
             self.scheduler.step()

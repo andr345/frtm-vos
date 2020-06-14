@@ -334,8 +334,8 @@ class ImageAugmenter:
         bim = cv2.blur(image, ksize=(d, d))
         image = (bim * m + (1 - m) * image).astype(np.uint8)
 
-        target = torch.from_numpy(target.transpose((2, 0, 1))).to(im.device)
-        image = torch.from_numpy(image.transpose((2, 0, 1))).to(im.device)
+        target = torch.from_numpy(target.transpose((2, 0, 1))).to(im.device).contiguous()
+        image = torch.from_numpy(image.transpose((2, 0, 1))).to(im.device).contiguous()
 
         return target, image
 

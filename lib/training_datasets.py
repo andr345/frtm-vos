@@ -1,13 +1,12 @@
-import json
 from pathlib import Path
+import json
 from collections import OrderedDict as odict
-from collections import defaultdict as ddict
 from easydict import EasyDict as edict
 from PIL import Image
-import numpy as np
-import cv2
-import random
 from tqdm import tqdm
+import cv2
+import numpy as np
+import random
 
 import torch
 import torch.nn.functional as F
@@ -17,11 +16,10 @@ from torch.utils.data import Dataset
 class SampleSpec:
 
     def __init__(self, seq_name=None, obj_id=None, frames=None, frame0_id=None):
-
         self.seq_name = seq_name
-        self.obj_id = int(obj_id)
+        self.obj_id = obj_id
         self.frames = frames
-        self.frame0_id = frame0_id  # For caching target models
+        self.frame0_id = frame0_id
 
     def __repr__(self):
         return "SampleSpec: " + str(vars(self))
@@ -36,341 +34,252 @@ class SampleSpec:
         return specs
 
 
-class DatasetMeta:
+class TrainingDataset(Dataset):
 
-    @staticmethod
-    def count_label_pixels(anno_path, sequences, resize_to=None):
-        """ Count the label pixels per object, per frame. """
+    def __init__(self, name, dset_path):
+        super().__init__()
+        self.dset_path = Path(dset_path)
+        self.name = name
+
+    def load_meta(self):
+
+        meta_file = Path(__file__).resolve().parent / (self.name + "_meta.pth")
+        if meta_file.exists():
+            return torch.load(meta_file)
+
+        print("Caching occlusions for %s, please wait." % self.anno_path)
+
+        frame_names = dict()
         label_pixel_counts = dict()
 
-        for k, seq in enumerate(tqdm(sequences)):
+        paths = [self.anno_path / seq for seq in sorted(self.sequences)]
+        for k, p in enumerate(tqdm(paths)):
 
-            seq_px_counts = ddict(dict)
-            max_px_counts = ddict(int)
+            frames = []
+            num_objects = 0
 
-            for lb_path in sorted((anno_path / seq).glob("*.png")):
+            # Gather per-frame stats
+
+            seq_lb_files = list(sorted(p.glob("*.png")))
+            for lb_path in seq_lb_files:
 
                 lb = np.array(Image.open(lb_path))
+                obj_ids, counts = np.unique(lb, return_counts=True)
+                frames.append((obj_ids, counts))
+                num_objects = max(num_objects, max(obj_ids))
 
-                # Resize to the shape the trainer will use
-                if resize_to is not None:
-                    lb = cv2.resize(lb, dsize=resize_to, interpolation=cv2.INTER_NEAREST)
+            # Populate a matrix of object pixel counts
 
-                # Count pixels per object
-                object_ids, counts = np.unique(lb, return_counts=True)
-                for obj_id, n in zip(object_ids.tolist(), counts.tolist()):
-                    seq_px_counts[obj_id][lb_path.stem] = n
-                    max_px_counts[obj_id] = max(n, max_px_counts[obj_id])
+            px_counts = np.zeros((len(frames), num_objects + 1))
 
-            for obj_id, max_n in max_px_counts.items():
-                seq_px_counts[obj_id]['max'] = max_px_counts[obj_id]
+            for i, (obj_ids, counts) in enumerate(frames):
+                for oid, cnt in zip(obj_ids, counts):
+                    px_counts[i, oid] = cnt
 
-            label_pixel_counts[seq] = dict(seq_px_counts)
+            frame_names[p.stem] = [f.stem for f in seq_lb_files]
+            label_pixel_counts[p.stem] = (px_counts, np.max(px_counts, axis=0))
 
-        return label_pixel_counts
+        # Generate object occlusions information and save
 
-    def get_label_pixels_counts(self, lpc_file, sequences, resize_to=None):
+        occlusions = self._generate_occlusions(label_pixel_counts)
+        meta = dict(frame_names=frame_names, occlusions=occlusions)
+        torch.save(meta, meta_file)
 
-        if not lpc_file.exists():
-            print("Caching label pixel counts in %s, please wait." % self.anno_path)
-            label_pixel_counts = self.count_label_pixels(self.anno_path, sequences, resize_to=resize_to)
-            json.dump(label_pixel_counts, open(lpc_file, "w"))
+        return meta
 
-        label_pixel_counts = json.load(open(lpc_file))
-        return label_pixel_counts
+    def generate_samples(self, epoch_samples, epoch_repeats, min_seq_length, sample_size):
 
-    def get_all_frames(self, sequences):
+        d = self.load_meta()
+        self.occlusions = d['occlusions']
+        self.frame_names = d['frame_names']
 
-        all_frames = dict()
+        sequences = []
+        for seq_name in self.sequences:
+            if self.sequence_length(seq_name) < min_seq_length:
+                continue
+            for obj_id in self.object_ids(seq_name)[1:].tolist():
+                sequences.append(edict(name=seq_name, obj_id=obj_id))
+
+        if epoch_samples > 0:
+            sequences = random.sample(sequences, epoch_samples)
+
+        self.specs = []
         for seq in sequences:
-            seq_frames = []
-            for ff in self.label_pixel_counts[seq].values():
-                seq_frames.extend(ff)
-            seq_frames = set(seq_frames)
-            seq_frames.discard('max')
-            all_frames[seq] = list(sorted(seq_frames))
+            for rep in range(epoch_repeats):
+                spec = self.sample_random_image_set(seq.name, obj_id=seq.obj_id, size=sample_size)
+                self.specs.append(spec)
 
-        return all_frames
+    def sample_random_image_set(self, seq_name, obj_id, size=3):
+        """  Create a SampleSpec object representing a (random) set of frames from a sequence.
+        :param seq_name:       Sequence name
+        :param obj_id:        Object to track (int)
+        :param size:           Set size > 1
+        :return: SampleSpec object
+        """
+        object_visible = self.object_visibility(seq_name, [obj_id], merge_objects=True)
+
+        possible_frames = np.where(object_visible)[0]
+        frames = np.random.choice(possible_frames, size=1, replace=False).tolist()
+        first_frame = frames[0]
+
+        num_frames = self.sequence_length(seq_name)
+        allframes = np.arange(num_frames)
+        allframes = allframes[allframes != first_frame]
+        frames = np.random.choice(allframes, size=size, replace=False).tolist()
+
+        return SampleSpec(seq_name, obj_id, frames=[first_frame, *frames[1:]], frame0_id=first_frame)
 
     def object_ids(self, seq_name):
         """ Find the ids of objects seen in the sequence. id 0 == background """
-        return list(self.visibilities[seq_name].keys())
+        assert self.occlusions is not None
+        occlusions = self.occlusions[seq_name]
+        always_occluded = occlusions.sum(axis=0) == occlusions.shape[0]
+        object_ids = np.where(np.invert(always_occluded))[0]
 
-    def object_visibility(self, seq_name, obj_id):
-        return self.visibilities[seq_name][obj_id]
+        return object_ids
 
-    def sequence_frames(self, seq_name):
-        return self.all_frames[seq_name]
+    def object_visibility(self, seq_name, obj_ids, merge_objects=False):
+        """ Get boolean vector of per-frame object visibility in the named sequence.
+        :param seq_name:  Sequence name
+        :param obj_ids:  Zero (None), one (int) or more (list) object ids.
+                         If zero, all objects (except the background) are selected
+        :param merge_objects:   If true, the visibilities of multiple objects are merged.
+        :return:
+        """
+        assert self.occlusions is not None
+
+        visible = np.invert(self.occlusions[seq_name])
+
+        if obj_ids is None:
+            visible = visible[:, 1:]
+        else:
+            visible = visible[:, obj_ids]
+
+        if visible.ndim == 1:
+            visible = np.expand_dims(visible, axis=1)
+
+        if merge_objects:
+            visible = visible.any(axis=1)
+
+        if visible.ndim == 1:
+            visible = np.expand_dims(visible, axis=1)
+
+        return visible
 
     def sequence_length(self, seq_name):
-        return len(self.all_frames[seq_name])
+        return self.occlusions[seq_name].shape[0]
 
-    def sample_random_image_set(self, seq_name, obj_id, size=3):
-        """  Select random frames from a sequence and create a sample
-        :param seq_name:       Sequence name / identifier
-        :param obj_id:         Object to track (int)
-        :param size:           Number of frames to select > 1
-        :return: SampleSpec object
-        """
-        visible_frames = self.object_visibility(seq_name, obj_id)
-        first_frame = np.random.choice(visible_frames, size=1).tolist()[0]
+    def __len__(self):
+        return len(self.specs)
 
-        allframes = set(self.sequence_frames(seq_name))
-        allframes.discard(first_frame)
-        frames = np.random.choice(list(sorted(allframes)), size=size - 1, replace=False).tolist()
-        frame0_id = self.sequence_frames(seq_name).index(first_frame)
+    def __getitem__(self, item):
 
-        return SampleSpec(seq_name=seq_name, obj_id=obj_id, frames=[first_frame, *frames], frame0_id=frame0_id)
-
-    def _generate_samples(self, sequences, sample_size, epoch_samples, epoch_repeats):
-
-        samples = []
-
-        log_seqs = []
-        for seq in sequences:
-            # Create logical sequences from one video, each with different target objects
-            for obj_id in self.object_ids(seq):
-                log_seqs.append(edict(name=seq, obj_id=obj_id))
-
-        # Select from the logical sequences
-        for _ in range(epoch_repeats):
-            epoch_seqs = random.sample(log_seqs, epoch_samples) if epoch_samples > 0 else log_seqs
-            # Selecting random frames from each sequence and build the sample
-            for seq in epoch_seqs:
-                s = self.sample_random_image_set(seq.name, obj_id=seq.obj_id, size=sample_size)
-                if s is not None:
-                    samples.append(s)
-
-        return samples
-
-    def load_sample(self, sample: SampleSpec, resize_to=(480, 854)):
-
+        spec = self.specs[item]
         images = []
         labels = []
 
-        for f in sample.frames:
-            im_path = str(self.jpeg_path / sample.seq_name / (f + ".jpg"))
-            lb_path = str(self.anno_path / sample.seq_name / (f + ".png"))
+        frame_names = self.frame_names[spec.seq_name]
+        for f in spec.frames:
+            frame = frame_names[f]
 
-            im = torch.from_numpy(np.array(Image.open(im_path)).transpose(2, 0, 1))
-            lb = torch.from_numpy(np.array(Image.open(lb_path)))
-            lb = lb.view(1, *lb.shape[-2:])
-            lb = (lb == sample.obj_id).byte()  # Select and rename the target object
-
-            if resize_to is not None:
-                im = F.interpolate(im.unsqueeze(0).float(), resize_to, mode='bicubic', align_corners=False).byte().squeeze(0)
-                lb = F.interpolate(lb.unsqueeze(0).float(), resize_to, mode='nearest').byte().squeeze(0)
-
+            im = np.array(Image.open(self.jpeg_path / spec.seq_name / (frame + ".jpg")))
+            s = 480 / im.shape[0]
+            im = cv2.resize(im, (854, 480), cv2.INTER_AREA if (s < 1.0) or (self.name == 'davis') else cv2.INTER_CUBIC)
+            im = torch.from_numpy(im.transpose(2, 0, 1))
             images.append(im)
+
+            lb = np.array(Image.open(self.anno_path / spec.seq_name / (frame + ".png")))
+            lb = (lb == spec.obj_id).astype(np.uint8)  # Relabel selected object to id 1
+            lb = torch.as_tensor(lb, dtype=torch.float32).view(1, 1, *lb.shape[:2])
+            lb = F.interpolate(lb, (480, 854), mode='nearest').byte().squeeze(0)
             labels.append(lb)
 
-        meta = sample.encoded()
-        return images, labels, meta
+        return images, labels, spec.encoded()
 
 
-class DAVISDataset(Dataset, DatasetMeta):
+class DAVISDataset(TrainingDataset):
 
-    def _get_visibilities(self, vis_file):
+    def __init__(self, dset_path: Path, epoch_repeats=1, epoch_samples=0, min_seq_length=4, sample_size=3):
+        super().__init__("davis", dset_path)
 
-        if vis_file.exists():
-            return json.load(open(vis_file))
-
-        min_px = 100
-
-        never_occluded = ['bus', 'car-turn', 'drift-chicane', 'drift-straight', 'drift-turn', 'kid-football', 'koala',
-                          'mallard-fly', 'mbike-trick', 'motocross-bumps', 'motocross-jump', 'motorbike', 'paragliding-launch',
-                          'parkour', 'rallye', 'scooter-black', 'snowboard', 'soapbox', 'train',
-                          'upside-down']
-
-        visibilities = odict()
-
-        for seq_name, seq_objects in self.label_pixel_counts.items():
-
-            seq_visibilities = ddict(list)
-
-            if seq_name in ('bmx-bumps', 'disk-jockey', 'lab-coat'):
-                occ_threshold = 0.5
-            elif seq_name in ('boxing-fisheye', 'cat-girl', 'dog-gooses'):
-                occ_threshold = 0.2
-            elif seq_name in ('tractor-sand', 'dogs-jump', 'drone'):
-                occ_threshold = 0.1
-            else:
-                occ_threshold = 0.25
-
-            for obj_id, frames in seq_objects.items():
-                if obj_id == '0':
-                    continue
-
-                if seq_name in never_occluded:
-                    frames = [f for f in frames if f != 'max']
-                    seq_visibilities[obj_id] = frames
-                    continue
-
-                max_count = frames['max']
-                for frame, px_count in frames.items():
-                    if frame == 'max':
-                        continue
-                    f = int(frame)
-
-                    # Occlude based on how small the object is
-                    occ = (px_count / (max_count + 0.001)) < occ_threshold
-                    occ = occ or (max_count == 0)
-
-                    # Manual tweaks
-                    if seq_name == 'classic-car':
-                        if f < 56:
-                            occ = False
-                    elif seq_name == 'dogs-jump' and obj_id == '2':
-                        occ = False  # Green dog
-                    elif seq_name == 'drone' and obj_id == '1':
-                        if f < 17 or (24 <= f < 60):
-                            occ = False  # Red quad
-                    elif seq_name == 'lab-coat' and int(obj_id) >= 3:
-                        occ[:, 3:] = False
-                    elif seq_name == 'night-race':
-                        if f < 29:
-                            occ = False
-                        if obj_id == '2':
-                            occ = False  # Green car
-
-                    occluded = occ or (px_count < min_px)
-
-                    if not occluded:
-                        seq_visibilities[obj_id].append(frame)
-
-            visibilities[seq_name] = dict(seq_visibilities)
-        json.dump(visibilities, open(vis_file, "w"))
-
-        return json.load(open(vis_file))
-
-    def __init__(self, dset_path, sample_size=3, epoch_samples=0, epoch_repeats=1):
-
-        self.dset_path = Path(dset_path)
         self.jpeg_path = self.dset_path / "JPEGImages" / "480p"
         self.anno_path = self.dset_path / "Annotations" / "480p"
+        self.sequences = [s.strip() for s in open(self.dset_path / "ImageSets/2017/train.txt").readlines()]
 
-        self.sample_size = sample_size
-        self.epoch_samples = epoch_samples
-        self.epoch_repeats = epoch_repeats
+        self.generate_samples(epoch_samples, epoch_repeats, min_seq_length, sample_size)
 
-        meta_path = Path(__file__).resolve().parent / "dset_meta"
-        assert meta_path.exists()
+    def _generate_occlusions(self, label_pixel_counts):
+        """ Generate per-frame, per-object occlusion flags
+            Each sequence is an (N, M) boolean array of N frames and M object ids. True/False if occluded/visible.
+            object 0 is the background. """
 
-        split = self.dset_path / "ImageSets/2017/train.txt"
-        lpc_file = meta_path / "dv2017_label_pixel_counts.json"
-        vis_file = meta_path / "dv2017_visibilities.json"
+        occlusions = odict()
 
-        split = [s.strip() for s in sorted(open(split).readlines())]
-        self.label_pixel_counts = self.get_label_pixels_counts(lpc_file, split, resize_to=(854, 480))
-        self.visibilities = self._get_visibilities(vis_file)
-        self.all_frames = self.get_all_frames(split)
+        min_px = 100  # Hard minimum
 
-        self.sequences = split
-        self.samples = self._generate_samples(self.sequences, self.sample_size, self.epoch_samples, self.epoch_repeats)
+        never_occluded = ['bus', 'car-turn', 'drift-turn', 'kid-football', 'koala',
+                          'mallard-fly', 'motocross-bumps', 'motorbike',
+                          'rallye', 'snowboard', 'train', 'upside-down']
 
-    def __len__(self):
-        return len(self.samples)
+        for seq_name in tqdm(self.sequences):
 
-    def __getitem__(self, item):
-        images, labels, meta = self.load_sample(self.samples[item], resize_to=(480, 854))
-        return images, labels, meta
+            px_counts, max_counts = label_pixel_counts[seq_name]
+            seq_length = len(list((self.jpeg_path / seq_name).glob("*.jpg")))
+
+            if seq_name in never_occluded:
+                occ = np.zeros(shape=px_counts.shape, dtype=np.bool)
+            else:
+
+                # Pixel fraction
+
+                if seq_name in ('bmx-bumps', 'disk-jockey'):
+                    occ_threshold = 0.5
+                elif seq_name in ('boxing-fisheye', 'cat-girl', 'dog-gooses'):
+                    occ_threshold = 0.2
+                elif seq_name in ('tractor-sand', 'drone'):
+                    occ_threshold = 0.1
+                else:
+                    occ_threshold = 0.25
+
+                occ = (px_counts / (max_counts + 0.001)) < occ_threshold
+                occ = occ + (max_counts == 0)
+
+            # Sequence specific tweaks
+
+            if seq_name == 'classic-car':
+                occ[:56, :] = False
+            elif seq_name == 'drone':
+                occ[:17, 1] = False  # Red quad
+                occ[24:60, 1] = False
+            elif seq_name == 'night-race':
+                occ[:29, :] = False
+                occ[:, 2] = False  # Green car
+
+            occ = occ + (px_counts < min_px)  # Apply a hard minimum
+
+            occlusions[seq_name] = occ
+
+        return occlusions
 
 
-class YouTubeVOSDataset(Dataset, DatasetMeta):
+class YouTubeVOSDataset(TrainingDataset):
 
-    def _get_visibilities(self, vis_file):
+    def __init__(self, dset_path, epoch_samples=4000, epoch_repeats=1, min_seq_length=4, sample_size=3, year=2018):
+        super().__init__("ytvos" + str(year), dset_path)
 
-        min_px = 100
-
-        if not vis_file.exists():
-            visibilities = odict()
-            for seq_name, seq_objects in self.label_pixel_counts.items():
-                seq_visibilities = ddict(list)
-                for obj_id, frames in seq_objects.items():
-                    if obj_id == '0':
-                        continue
-                    for f, n in frames.items():
-                        if f == 'max':
-                            continue
-                        if n > min_px:
-                            seq_visibilities[obj_id].append(f)
-                visibilities[seq_name] = dict(seq_visibilities)
-            json.dump(visibilities, open(vis_file, "w"))
-
-        return json.load(open(vis_file, "r"))
-
-    def _get_clean_split(self, sequences, clean_split_file):
-
-        if not clean_split_file.exists():
-
-            # Remove YouTubeVOS training sequences with unusual aspect ratios
-
-            removed = 0
-            good_ar_split = []
-
-            for k, seq in enumerate(tqdm(sequences)):
-                src_annos = list(sorted((self.anno_path / seq).glob("*.png")))
-
-                w, h = Image.open(src_annos[0]).size
-                s = 480 / h
-                w = int(s * w + 0.5)
-
-                # Remove very wide or very narrow sequences
-                if w < 840 or w > 860:
-                    removed += 1
-                    continue
-                good_ar_split.append(seq)
-
-            # Remove sequences where objects appear in just a small number of frames.
-            # Whenever this happens, it indicates that object ids mutate.
-
-            required_frames = 4
-            sequences = []
-
-            for seq in good_ar_split:
-                bad_seq = False
-                for obj_id, frames in self.visibilities[seq].items():
-                    bad_seq = bad_seq or len(frames) < required_frames
-                if not bad_seq:
-                    sequences.append(seq)
-
-            with open(str(clean_split_file), "w") as f:
-                for s in sequences:
-                    print(s, file=f)
-
-        sequences = [s.strip() for s in sorted(open(clean_split_file).readlines())]
-        return sequences
-
-    def __init__(self, dset_path, sample_size=3, min_seq_length=3, epoch_samples=0, epoch_repeats=1):
-
-        self.dset_path = Path(dset_path)
         self.jpeg_path = self.dset_path / "train" / "JPEGImages"
         self.anno_path = self.dset_path / "train" / "Annotations"
+        self.sequences = [s.strip() for s in open(Path(__file__).resolve().parent / "ytvos_jjtrain.txt").readlines()]
 
-        self.sample_size = sample_size
-        self.epoch_samples = epoch_samples
-        self.epoch_repeats = epoch_repeats
+        self.generate_samples(epoch_samples, epoch_repeats, min_seq_length, sample_size)
 
-        meta_path = Path(__file__).resolve().parent / "dset_meta"
-        assert meta_path.exists()
+    def _generate_occlusions(self, label_pixel_counts):
+        """ Generate per-frame, per-object occlusion flags
+            Each sequence is an (N, M) boolean array of N frames and M object ids. True/False if occluded/visible.
+            object 0 is the background. """
 
-        jjval_split = meta_path / "ytvos_jjtrain.txt"
-        clean_split = meta_path / "ytvos_clean_jjtrain.txt"
-        lpc_file = meta_path / "ytvos2018_label_pixel_counts.json"
-        vis_file = meta_path / "ytvos2018_visibilities.json"
+        occlusions = odict()
+        for seq_name, (px_counts, max_counts) in label_pixel_counts.items():
+            occlusions[seq_name] = (px_counts < 100)
 
-        jjval_split = [s.strip() for s in sorted(open(jjval_split).readlines())]
-        self.label_pixel_counts = self.get_label_pixels_counts(lpc_file, jjval_split, resize_to=(854, 480))
-        self.visibilities = self._get_visibilities(vis_file)
-        self.all_frames = self.get_all_frames(jjval_split)
-        split = self._get_clean_split(jjval_split, clean_split)
-
-        self.sequences = [seq for seq in split if self.sequence_length(seq) >= min_seq_length]
-        self.samples = self._generate_samples(self.sequences, self.sample_size, self.epoch_samples, self.epoch_repeats)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, item):
-        images, labels, meta = self.load_sample(self.samples[item], resize_to=(480, 854))
-        return images, labels, meta
+        return occlusions
