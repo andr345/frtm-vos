@@ -101,7 +101,6 @@ python evaluate.py --model rn101_all.pth --dset dv2017val         # Ours DAVIS 2
 python evaluate.py --model rn18_ytvos.pth --fast --dset yt2018val # Ours fast YouTubeVos 2018
 python evaluate.py --model rn18_all.pth --fast --dset dv2016val   # Ours fast DAVIS 2016
 python evaluate.py --model rn18_all.pth --fast --dset dv2017val   # Ours fast DAVIS 2017
-
 ```
 
 `--model` is the name of the checkpoint to use in the `weights` directory.
@@ -137,7 +136,7 @@ python train.py <session-name> --ftext resnet101 --dset all --dev cuda:0
 
 `--dev` is the name of the device to train on.
 
-Replace <session-name> with whatever you like. Subdirectories with this name
+Replace "session-name" with whatever you like. Subdirectories with this name
 will be created under your checkpoint and tensorboard paths.
 
 ### Target model cache
@@ -147,8 +146,9 @@ Once the cache is mostly full, the next training session should take less than 2
 The cache requires 17 GB disk space for training with ResNet-101 features and 32 intermediate
 channels (as in the paper) and 5 GB for ResNet-18 and the same number of channels.
 
-We intend to share our own cache online to give everybody a quick-start, hopefully before the
-end of the week (i.e June 19th 2020).
+Our own cache (22GB) is available [here](https://liuonline-my.sharepoint.com/:f:/g/personal/andro44_liu_se/Er6vfgqY0p5HqqrZqeTM-4ABHPR2tJR-3_XMqxxXBt0hJg?e=a17Jfz).
+The link is not permanent and will change eventually, so make sure to check this readme in the GitHub
+repository if you find that it has expired.
  
 ## Contact
 Andreas Robinson
