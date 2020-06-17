@@ -146,7 +146,7 @@ Once the cache is mostly full, the next training session should take less than 2
 The cache requires 17 GB disk space for training with ResNet-101 features and 32 intermediate
 channels (as in the paper) and 5 GB for ResNet-18 and the same number of channels.
 
-Our own cache (22GB) is available [here](https://liuonline-my.sharepoint.com/:f:/g/personal/andro44_liu_se/Er6vfgqY0p5HqqrZqeTM-4ABHPR2tJR-3_XMqxxXBt0hJg?e=a17Jfz).
+Our own cache (20 GB) is available [here](https://liuonline-my.sharepoint.com/:f:/g/personal/andro44_liu_se/Er6vfgqY0p5HqqrZqeTM-4ABHPR2tJR-3_XMqxxXBt0hJg?e=a17Jfz).
 The link is not permanent and will change eventually, so make sure to check this readme in the GitHub
 repository if you find that it has expired.
  
