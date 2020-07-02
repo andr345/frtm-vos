@@ -2,6 +2,7 @@ from pathlib import Path
 import os, sys
 _srcdir = Path(__file__).resolve().parent
 _build_dir = Path.home() / "tmp"
+_build_dir.mkdir(parents=True, exist_ok=True)
 
 from torch.utils.cpp_extension import load, verify_ninja_availability
 try:
