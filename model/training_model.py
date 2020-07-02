@@ -26,6 +26,9 @@ class TargetObject:
             p.requires_grad_(False)
         self.discriminator.eval()
 
+    def get_state_dict(self):
+        return self.discriminator.state_dict()
+
     def classify(self, ft):
         return self.discriminator.apply(ft)
 
