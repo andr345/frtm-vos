@@ -56,7 +56,7 @@ class ModelParameters:
         )
 
         self.disc_params = edict(
-            layer="layer4", in_channels=1024, c_channels=32, out_channels=1,
+            layer="layer4", in_channels=256 if '18' in feature_extractor else 1024, c_channels=32, out_channels=1,
             init_iters=(5, 10, 10, 10, 10), update_iters=(10,), update_filters=True,
             filter_reg=(1e-5, 1e-4), precond=(1e-5, 1e-4), precond_lr=0.1, CG_forgetting_rate=75,
             memory_size=20, train_skipping=8, learning_rate=0.1,
