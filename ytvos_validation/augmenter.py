@@ -1,10 +1,9 @@
 from time import time
 from copy import deepcopy
 import numpy as np
-import cv2
 import torch
 from torch.nn import functional as F
-from lib.image import warp_affine
+import cv2
 
 
 class AugmentationParams1:
@@ -136,6 +135,25 @@ class ImageAugmenter:
         G = np.exp(-0.5 * X)
         G = G / G.sum() * 1.0
         return G.astype(np.float32)
+
+    @staticmethod
+    def warp_affine(src, H, dsize, interpolation='bicubic'):
+        """ Warp a single image or a batch of images with an affine transform.
+        :param src:    Input to warp, shape = (..., H, W)
+        :param H:      Forward warp affine transform
+        :param dsize:  Output (height, width) in pixels
+        :param interpolation:  Interpolation mode. Default 'bicubic'
+        :return:  Warped output
+        """
+        dsize = int(dsize[1]), int(dsize[0])
+        H = H[:2].astype(np.float)
+        flags = dict(bicubic=cv2.INTER_CUBIC, bilinear=cv2.INTER_LINEAR, nearest=cv2.INTER_NEAREST)[interpolation]
+
+        im = src.permute(1, 2, 0).squeeze().cpu().numpy()
+        dst = cv2.warpAffine(im, H, dsize, flags=flags)
+        dst = torch.from_numpy(np.atleast_3d(dst).transpose(2, 0, 1)).to(src.device)
+
+        return dst
 
     def generate_specs1(self, N, aparams: AugmentationParams1, tg_bbox, im_size, force_unity_scale=False):
 
@@ -292,7 +310,6 @@ class ImageAugmenter:
         else:
             raise ValueError
 
-
     @staticmethod
     def cut_and_inpaint(im, mask: torch.Tensor, d=9, f=3, fast=False):
         """ Cut out the target object and inpaint the hole
@@ -334,8 +351,8 @@ class ImageAugmenter:
         bim = cv2.blur(image, ksize=(d, d))
         image = (bim * m + (1 - m) * image).astype(np.uint8)
 
-        target = torch.from_numpy(target.transpose((2, 0, 1))).to(im.device).contiguous()
-        image = torch.from_numpy(image.transpose((2, 0, 1))).to(im.device).contiguous()
+        target = torch.from_numpy(target.transpose((2, 0, 1))).to(im.device)
+        image = torch.from_numpy(image.transpose((2, 0, 1))).to(im.device)
 
         return target, image
 
@@ -362,11 +379,16 @@ class ImageAugmenter:
         sz = image.shape[-2:]
 
         H = np.array(H, dtype=np.float32)
-        image = warp_affine(image, H, sz).clamp(0, 255)
+        image = cls.warp_affine(image, H, sz).clamp(0, 255)
         image = cls.filter_image(image, kernel)
 
         return image
 
+    @classmethod
+    def warp_distractors(cls, distractors, H):
+        sz = distractors.shape[-2:]
+        distractors = cls.warp_affine(distractors, H, sz, 'nearest')
+        return distractors
 
     @classmethod
     def warp_filter_and_paste(cls, image, target, labels, H, kernel):
@@ -386,8 +408,8 @@ class ImageAugmenter:
 
         sz = image.shape[-2:]
         H = np.array(H, dtype=np.float32)
-        target = warp_affine(target, H, sz).clamp(0, 255)
-        labels = warp_affine(labels, H, sz, 'nearest')
+        target = cls.warp_affine(target, H, sz).clamp(0, 255)
+        labels = cls.warp_affine(labels, H, sz, 'nearest')
 
         # Filter
 
@@ -404,7 +426,7 @@ class ImageAugmenter:
         return image, labels
 
     def augment_from_specs(self, image, target, target_mask, tg_aspec: AugmentationSpec, tg_bbox,
-                           bg_aspec: AugmentationSpec=None):
+                           bg_aspec: AugmentationSpec=None, distractors=None):
         """  Create one augmented image from specifications.
         :param image:        Inpainted Source image (tensor, shape (3,H,W)
         :param target:       Target source image (tensor, shape (3,H,W)
@@ -421,11 +443,16 @@ class ImageAugmenter:
             bg_bbox = (w / 2, h / 2, w, h)
             T, G = self.get_transform(bg_aspec, bg_bbox, image.shape[-2:], limit_scale=False)
             wimage = self.warp_and_filter_image(image, T, G)
+            if distractors is not None:
+                wdistractors = self.warp_distractors(distractors, T)
         else:
             wimage = image
 
         T, G = self.get_transform(tg_aspec, tg_bbox, wimage.shape[-2:])
         wimage, wlabels = self.warp_filter_and_paste(wimage, target, target_mask, T, G)
+        if distractors is not None:
+            wlabels = wlabels + wdistractors
+            wlabels[wlabels == 3] = 1  # Target wins over distractor
 
         return wimage, wlabels
 
@@ -475,31 +502,27 @@ class ImageAugmenter:
         p = self.params
         im_sz = im.shape[-2:]
 
-        # target_mask = (lb == 1).byte()
+        target_mask = (lb == 1).byte()
+        distractors = None
 
         # Verify target object
-
-        target_mask = lb
-        obj_pix_counts = lb.sum()
-        no_background = obj_pix_counts == lb.numel()
-        if obj_pix_counts < self.params.min_px_count:
-            raise ValueError("Augmentation failed: Target object is too small.")
-
-        # obj_ids, obj_pix_counts = np.unique(lb.cpu().numpy(), return_counts=True)
-        # no_background = (obj_ids[0] != 0)
-        # if not no_background:  # Have background -> remove the background class
-        #     obj_ids = obj_ids[1:]
-        #     obj_pix_counts = obj_pix_counts[1:]
-        # if np.any(obj_pix_counts < self.params.min_px_count):
-        #     raise ValueError("Augmentation failed: Target object is too small.")
 
         tg_bbox = self.center_bbox_from_mask(target_mask)
         if tg_bbox[-2:] == (0, 0):
             raise ValueError("Augmentation failed: No object to augment.")
 
+        obj_ids, obj_pix_counts = np.unique(lb.cpu().numpy(), return_counts=True)
+        no_background = (obj_ids[0] != 0)
+        if not no_background:  # Have background -> remove the background class
+            obj_ids = obj_ids[1:]
+            obj_pix_counts = obj_pix_counts[1:]
+
+        if np.any(obj_pix_counts < self.params.min_px_count):
+            raise ValueError("Augmentation failed: Target object is too small.")
+
         # Cut and inpaint
 
-        target, inpainted_image = self.cut_and_inpaint(im, target_mask, d=1, f=1, fast=False)
+        target, inpainted_image = self.cut_and_inpaint(im, target_mask, d=1, f=1, fast=True)
 
         # Finalize parameters
 
@@ -517,7 +540,7 @@ class ImageAugmenter:
 
             retries += 1
             if retries > self.max_retries:
-                RuntimeError("Augmentation failed: Not enough samples after %d retries." % (self.max_retries))
+                RuntimeError("Augmentation failed: Not enough samples after %d retries." % self.max_retries)
 
             # Generate N augmentation specs
 
@@ -530,7 +553,7 @@ class ImageAugmenter:
             # Warp, blur and paste
 
             for fg_aspec, bg_aspec in zip(fg_aspecs, bg_aspecs):
-                wimage, wlabels = self.augment_from_specs(inpainted_image, target, target_mask, fg_aspec, tg_bbox, bg_aspec)
+                wimage, wlabels = self.augment_from_specs(inpainted_image, target, target_mask, fg_aspec, tg_bbox, bg_aspec, distractors=distractors)
                 good_frame = self.verify_frame([1], wlabels, no_background)
                 if good_frame:
                     aug_images.append(wimage)

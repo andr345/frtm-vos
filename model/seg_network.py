@@ -1,5 +1,5 @@
 import torch
-from torch import nn as nn
+from torch import nn
 from torch.nn import functional as F
 from lib.utils import conv, relu, interpolate, adaptive_cat
 
@@ -29,14 +29,11 @@ class CAB(nn.Module):
         self.convreluconv = nn.Sequential(conv(2 * oc, oc, 1), relu(), conv(oc, oc, 1))
         self.deepest = deepest
 
-    def forward(self, deeper, shallower, att_vec=None):
+    def forward(self, deeper, shallower):
 
         shallow_pool = F.adaptive_avg_pool2d(shallower, (1, 1))
         deeper_pool = deeper if self.deepest else F.adaptive_avg_pool2d(deeper, (1, 1))
-        if att_vec is not None:
-            global_pool = torch.cat([shallow_pool, deeper_pool, att_vec], dim=1)
-        else:
-            global_pool = torch.cat((shallow_pool, deeper_pool), dim=1)
+        global_pool = torch.cat((shallow_pool, deeper_pool), dim=1)
         conv_1x1 = self.convreluconv(global_pool)
         inputs = shallower * torch.sigmoid(conv_1x1)
         out = inputs + interpolate(deeper, inputs.shape[-2:])
@@ -68,7 +65,6 @@ class Upsampler(nn.Module):
         self.conv2 = conv(in_channels // 2, 1, 3)
 
     def forward(self, x, image_size):
-        print(x.shape)
         x = F.interpolate(x, (2 * x.shape[-2], 2 * x.shape[-1]), mode='bicubic', align_corners=False)
         x = F.relu(self.conv1(x))
         x = F.interpolate(x, image_size[-2:], mode='bicubic', align_corners=False)
@@ -179,23 +175,12 @@ class SegNetwork(nn.Module):
 
     def forward(self, scores, features, image_size):
 
-        num_targets = scores.shape[0]
-        num_fmaps = features[next(iter(self.ft_channels))].shape[0]
-        if num_targets > num_fmaps:
-            multi_targets = True
-        else:
-            multi_targets = False
-
         x = None
         for i, L in enumerate(self.ft_channels):
             ft = features[L]
             s = interpolate(scores, ft.shape[-2:])  # Resample scores to match features size
 
-            if multi_targets:
-                h, hpool = self.TSE[L](ft.repeat(num_targets, 1, 1, 1), s, x)
-            else:
-                h, hpool = self.TSE[L](ft, s, x)
-
+            h, hpool = self.TSE[L](ft, s, x)
             h = self.RRB1[L](h)
             h = self.CAB[L](hpool, h)
             x = self.RRB2[L](h)
